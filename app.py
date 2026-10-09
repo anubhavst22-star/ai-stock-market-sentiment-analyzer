@@ -98,7 +98,15 @@ def show_price_information(result: dict[str, Any]) -> None:
     period_return = latest_close / first_close - 1 if first_close else 0.0
     price_date = str(prices.index[-1])[:10]
 
-    st.caption(f"Adjusted historical prices · latest available date: {price_date} · currency: INR")
+    source_exchange = prices.attrs.get("exchange", result["exchange"])
+    source_note = (
+        f"price history source: {source_exchange}"
+        if source_exchange != result["exchange"]
+        else f"{source_exchange} price history"
+    )
+    st.caption(
+        f"Adjusted {source_note} · latest available date: {price_date} · currency: INR"
+    )
     price_col, daily_col, period_col = st.columns(3)
     price_col.metric("Latest closing price", f"₹{latest_close:,.2f}")
     daily_col.metric(
@@ -398,3 +406,4 @@ st.caption(
     "This application is developed for academic and educational purposes only "
     "and does not constitute investment advice."
 )
+
