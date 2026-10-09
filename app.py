@@ -397,4 +397,3 @@ else:
         _show_deep_dive(analysis, api_key, model)
     st.divider()
     st.caption("Educational use only; not investment advice. Verify every headline and filing at its original source. Sentiment does not establish causation or predict returns.")
-
