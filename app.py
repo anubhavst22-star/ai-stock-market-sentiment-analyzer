@@ -1,529 +1,400 @@
-"""Streamlit dashboard for the AI Stock Market Sentiment Analyzer."""
+"""AlphaPulse: an evidence-led Indian equities sentiment research terminal."""
 
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
 from src.analysis import aggregate_stock_sentiment, analyze_sentiment_vs_returns
+from src.analysis.terminal_features import (
+    daily_headline_sentiment, local_deep_dive,
+    sentiment_label_to_status, top_headline_keywords,
+)
 from src.market_data import (
-    INDIAN_STOCKS,
-    MarketDataError,
-    CompanyUniverseError,
-    fetch_company_research,
-    fetch_nse_equity_universe,
-    fetch_stock_data,
-    search_companies,
+    INDIAN_STOCKS, CompanyUniverseError, MarketDataError,
+    fetch_company_research, fetch_nse_equity_universe, fetch_stock_data,
 )
 from src.news import collect_news
 from src.sentiment import analyze_news
-from src.summary import generate_summary
-
-
-st.set_page_config(
-    page_title="AI Stock Market Sentiment Analyzer",
-    page_icon="📈",
-    layout="wide",
+from src.summary.terminal_assistant import (
+    DEFAULT_MODEL, answer_question, build_analysis_context, generate_deep_dive,
 )
 
 
-@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
-def load_company_universe() -> tuple[pd.DataFrame, str]:
-    """Cache the NSE security list for six hours to reduce exchange requests."""
-    return fetch_nse_equity_universe()
-
-
-@st.cache_data(ttl=12 * 60 * 60, show_spinner=False)
-def load_company_research(symbol: str, exchange: str) -> dict[str, Any]:
-    """Cache secondary-provider fundamentals for half a day."""
-    return fetch_company_research(symbol, exchange)
-
-
-COMPANY_NAMES = dict(INDIAN_STOCKS)
+st.set_page_config(layout="wide", page_title="AlphaPulse // AI Market Terminal")
 
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 2rem; padding-bottom: 2rem;}
-    [data-testid="stMetric"] {
-        background: #f7f9fc;
-        border: 1px solid #e7ebf1;
-        padding: 1rem 1.1rem;
-        border-radius: 0.65rem;
-    }
-    [data-testid="stMetricLabel"] {color: #526174;}
-    div[data-testid="stSidebar"] {border-right: 1px solid #e7ebf1;}
+    :root { color-scheme: dark; }
+    .stApp { background: #070b12; color: #e6edf7; }
+    [data-testid="stHeader"] { background: rgba(7, 11, 18, .92); }
+    [data-testid="stSidebar"] { background: #0b111b; border-right: 1px solid #202c3d; }
+    [data-testid="stMetric"] { background: #0d1623; border: 1px solid #1d2b3e; border-radius: 12px; padding: 16px; }
+    [data-testid="stMetricLabel"] { color: #98a8be; }
+    [data-testid="stMetricValue"] { color: #f3f7fc; }
+    [data-testid="stTabs"] button { color: #aab7c8; }
+    [data-testid="stTabs"] button[aria-selected="true"] { color: #64d5c2; border-bottom-color: #64d5c2; }
+    div[data-testid="stExpander"] { border: 1px solid #1d2b3e; border-radius: 10px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
-def run_analysis(symbol: str, exchange: str, period: str, article_limit: int) -> dict[str, Any]:
-    """Collect data and calculate all dashboard results for the selected stock."""
-    company_name = COMPANY_NAMES.get(symbol, symbol)
-    raw_articles = collect_news(company_name, limit=article_limit)
-    articles = analyze_news(raw_articles)
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def load_universe() -> tuple[pd.DataFrame, str]:
+    return fetch_nse_equity_universe()
 
-    prices = None
-    price_error = None
+
+@st.cache_data(ttl=20 * 60, show_spinner=False)
+def load_analysis(
+    symbol: str, company_name: str, exchange: str,
+    start_iso: str, end_iso: str, article_limit: int,
+) -> dict[str, Any]:
+    """Fetch and calculate one analysis; cache market/news data briefly."""
+    start_day, end_day = date.fromisoformat(start_iso), date.fromisoformat(end_iso)
+    articles = analyze_news(collect_news(company_name, limit=article_limit))
+    prices, price_error = None, None
     try:
-        prices = fetch_stock_data(symbol, exchange=exchange, period=period)
-    except MarketDataError as error:
+        # yfinance treats end as exclusive; add one day to include the selected end.
+        prices = fetch_stock_data(
+            symbol, exchange=exchange,
+            start_date=start_day.isoformat(),
+            end_date=(end_day + timedelta(days=1)).isoformat(),
+        )
+    except (MarketDataError, ValueError) as error:
         price_error = str(error)
-
     summary = aggregate_stock_sentiment(articles, prices)
     comparison = analyze_sentiment_vs_returns(articles, prices)
-    ai_summary = None
-    summary_error = None
-    try:
-        ai_summary = generate_summary(
-            stock_name=company_name,
-            symbol=symbol,
-            exchange=exchange,
-            aggregate=summary,
-            articles=articles,
-        )
-    except Exception as error:
-        summary_error = str(error)
-
     return {
-        "symbol": symbol,
-        "company_name": company_name,
-        "exchange": exchange,
-        "period": period,
-        "articles": articles,
-        "prices": prices,
-        "summary": summary,
-        "sentiment_price_analysis": comparison,
-        "ai_summary": ai_summary,
+        "symbol": symbol, "company_name": company_name, "exchange": exchange,
+        "start_date": start_iso, "end_date": end_iso, "articles": articles,
+        "prices": prices, "summary": summary, "comparison": comparison,
         "price_error": price_error,
-        "summary_error": summary_error,
-        "analyzed_on": date.today().isoformat(),
+        "retrieved_at": datetime.now().astimezone().isoformat(timespec="minutes"),
     }
 
 
-def show_price_information(result: dict[str, Any]) -> None:
-    """Display the latest price and return information as metric cards."""
-    prices = result["prices"]
-    if prices is None or prices.empty:
-        st.warning(result["price_error"] or "Stock price data is unavailable.")
-        return
-
-    latest = prices.iloc[-1]
-    latest_close = float(latest["Close"])
-    latest_return = result["summary"]["latest_daily_return"]
-    first_close = float(prices["Close"].iloc[0])
-    period_return = latest_close / first_close - 1 if first_close else 0.0
-    price_date = str(prices.index[-1])[:10]
-
-    source_exchange = prices.attrs.get("exchange", result["exchange"])
-    source_note = (
-        f"price history source: {source_exchange}"
-        if source_exchange != result["exchange"]
-        else f"{source_exchange} price history"
-    )
-    st.caption(
-        f"Adjusted {source_note} · latest available date: {price_date} · currency: INR"
-    )
-    price_col, daily_col, period_col = st.columns(3)
-    price_col.metric("Latest closing price", f"₹{latest_close:,.2f}")
-    daily_col.metric(
-        "Latest daily return",
-        "N/A" if latest_return is None else f"{latest_return * 100:+.2f}%",
-    )
-    period_col.metric(f"Return over selected period ({result['period']})", f"{period_return * 100:+.2f}%")
-
-
-def show_sentiment_charts(result: dict[str, Any]) -> None:
-    """Draw the sentiment distribution and dated headline sentiment trend."""
-    summary = result["summary"]
-    articles = result["articles"]
-    distribution = pd.DataFrame(
-        {
-            "Sentiment": ["Positive", "Neutral", "Negative"],
-            "Articles": [
-                summary["positive_articles"],
-                summary["neutral_articles"],
-                summary["negative_articles"],
-            ],
-        }
-    )
-    colors = {"Positive": "#2f7d62", "Neutral": "#8795a8", "Negative": "#b85c5c"}
-    pie = px.pie(
-        distribution,
-        names="Sentiment",
-        values="Articles",
-        hole=0.58,
-        color="Sentiment",
-        color_discrete_map=colors,
-    )
-    pie.update_traces(textposition="inside", textinfo="percent+label")
-    pie.update_layout(
-        margin=dict(l=8, r=8, t=12, b=8),
-        legend_title_text="",
-        showlegend=False,
-    )
-
-    sentiment_rows = []
-    for article in articles:
-        try:
-            published = pd.to_datetime(article.get("publication_date"), errors="coerce")
-            score = float(article["sentiment_score"])
-        except (TypeError, ValueError, KeyError):
-            continue
-        if not pd.isna(published):
-            sentiment_rows.append({"Date": published, "Score": score})
-
-    if sentiment_rows:
-        trend = pd.DataFrame(sentiment_rows).groupby("Date", as_index=False)["Score"].mean()
-        line = px.line(trend, x="Date", y="Score", markers=True)
-        line.update_traces(line_color="#365d86", marker_color="#365d86")
-        line.add_hline(y=0, line_dash="dot", line_color="#aab3bf")
-        line.update_yaxes(range=[-1, 1], title="Average headline score")
-        line.update_xaxes(title="Publication date")
-        line.update_layout(margin=dict(l=8, r=8, t=12, b=8), showlegend=False)
-    else:
-        line = None
-
-    chart_col, trend_col = st.columns(2)
-    with chart_col:
-        st.subheader("Sentiment distribution")
-        st.plotly_chart(pie, use_container_width=True)
-    with trend_col:
-        st.subheader("Sentiment trend")
-        if line is None:
-            st.info("Publication dates are unavailable, so a sentiment trend cannot be plotted.")
-        else:
-            st.plotly_chart(line, use_container_width=True)
-
-
-def show_stock_price_chart(result: dict[str, Any]) -> None:
-    """Draw the selected stock's adjusted closing price over time."""
-    prices = result["prices"]
-    st.subheader("Stock price history")
-    if prices is None or prices.empty:
-        st.info("The price chart is unavailable because no historical prices were retrieved.")
-        return
-
-    chart = go.Figure()
-    chart.add_trace(
-        go.Scatter(
-            x=prices.index,
-            y=prices["Close"],
-            mode="lines",
-            name="Adjusted close",
-            line=dict(color="#365d86", width=2),
-        )
-    )
-    chart.update_layout(
-        xaxis_title="Date",
-        yaxis_title="Price (INR)",
-        margin=dict(l=8, r=8, t=12, b=8),
-        hovermode="x unified",
-    )
-    st.plotly_chart(chart, use_container_width=True)
-
-
-def show_sentiment_price_analysis(result: dict[str, Any]) -> None:
-    """Compare same-day average news sentiment with the daily stock return."""
-    st.subheader("Sentiment vs Stock Price Analysis")
-    comparison = result["sentiment_price_analysis"]
-    correlation = comparison["correlation"]
-    matched_data = comparison["paired_data"]
-
-    correlation_col, matched_col = st.columns(2)
-    correlation_col.metric(
-        "Pearson correlation",
-        "N/A" if correlation is None else f"{correlation:+.2f}",
-    )
-    matched_col.metric("Matched trading days", comparison["matched_days"])
-    st.write(comparison["interpretation"])
-
-    if comparison["sample_articles_excluded"]:
-        st.info(
-            f"{comparison['sample_articles_excluded']} mock news article(s) were excluded "
-            "from this comparison because they are placeholders, not real market news."
-        )
-
-    st.caption(
-        "Headlines are grouped by publication date and matched to returns from the same "
-        "calendar date. Weekend or holiday news is not shifted to another session. "
-        "Correlation uses only days with both a news score and a valid return."
-    )
-
-    if matched_data.empty:
-        st.info(
-            "There are no trading days with both real, dated news and a daily return. "
-            "Try again when the news feed has matching articles."
-        )
-    else:
-        chart = make_subplots(specs=[[{"secondary_y": True}]])
-        chart.add_trace(
-            go.Scatter(
-                x=matched_data["trading_day"],
-                y=matched_data["average_news_sentiment"],
-                mode="lines+markers",
-                name="Average news sentiment",
-                line=dict(color="#365d86", width=2),
-            ),
-            secondary_y=False,
-        )
-        chart.add_trace(
-            go.Scatter(
-                x=matched_data["trading_day"],
-                y=matched_data["daily_return"] * 100,
-                mode="lines+markers",
-                name="Daily stock return",
-                line=dict(color="#2f7d62", width=2),
-            ),
-            secondary_y=True,
-        )
-        chart.update_yaxes(title_text="Average news sentiment (-1 to +1)", range=[-1, 1], secondary_y=False)
-        chart.update_yaxes(title_text="Daily stock return (%)", secondary_y=True)
-        chart.update_xaxes(title_text="Trading day")
-        chart.update_layout(
-            hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-            margin=dict(l=8, r=8, t=28, b=8),
-        )
-        st.plotly_chart(chart, use_container_width=True)
-
-    daily_table = comparison["daily_data"].copy()
-    if not daily_table.empty:
-        daily_table["daily_return_pct"] = daily_table["daily_return"] * 100
-        daily_table = daily_table[
-            ["trading_day", "average_news_sentiment", "daily_return_pct"]
-        ].rename(
-            columns={
-                "trading_day": "Trading day",
-                "average_news_sentiment": "Average news sentiment",
-                "daily_return_pct": "Daily stock return (%)",
-            }
-        )
-        with st.expander("View daily sentiment and return calculations"):
-            st.dataframe(daily_table, use_container_width=True, hide_index=True)
-
-    st.info("Correlation does not imply causation.")
-
-
-def show_news_table(articles: list[dict[str, Any]]) -> None:
-    """Show collected articles with sentiment and clickable article links."""
-    st.subheader("Recent financial news")
-    if not articles:
-        st.info("No news articles were returned.")
-        return
-
-    table = pd.DataFrame(articles)
-    display_columns = {
-        "headline": "Headline",
-        "publication_date": "Publication date",
-        "source": "Source",
-        "sentiment": "Sentiment",
-        "sentiment_score": "Sentiment score",
-        "article_url": "Article URL",
-    }
-    visible = table[[column for column in display_columns if column in table.columns]].rename(
-        columns=display_columns
-    )
-    if "Sentiment score" in visible.columns:
-        visible["Sentiment score"] = visible["Sentiment score"].map(lambda value: round(float(value), 3))
-    st.dataframe(
-        visible,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Article URL": st.column_config.LinkColumn("Article", display_text="Open article"),
-            "Headline": st.column_config.TextColumn("Headline", width="large"),
-        },
-    )
-    if any(article.get("source") == "Sample Data" for article in articles):
-        st.caption("Sample Data rows are placeholders used when the news feed has no results or is unavailable.")
-
-
-st.title("AI Stock Market Sentiment Analyzer")
-st.caption("A student dashboard for exploring financial headlines, sentiment, and historical returns.")
-
-with st.expander("Company directory and research", expanded=False):
-    st.markdown(
-        "Search the current combined NSE and BSE-exclusive equity security file by company name, ticker, or ISIN. "
-        "The exchange file does not publish sector classifications. BSE-exclusive companies may not have "
-        "historical prices in the existing Yahoo Finance price module."
-    )
+def _secret(name: str, default: str = "") -> str:
     try:
-        company_universe, universe_updated = load_company_universe()
-        COMPANY_NAMES.update(dict(zip(company_universe["symbol"], company_universe["company_name"])))
-        exchange_filter = st.selectbox(
-            "Exchange filter", ["All", "NSE", "BSE exclusive"], key="company_exchange_filter"
-        )
-        sector_options = sorted(company_universe["sector"].dropna().unique().tolist())
-        sector_filter = st.selectbox("Sector filter", ["All", *sector_options], key="company_sector_filter")
-        company_query = st.text_input("Search company, ticker, or ISIN", key="company_query")
-        matches = search_companies(company_universe, company_query, exchange_filter, sector_filter)
-        st.caption(
-            f"Source: [NSE daily combined security master]({company_universe.attrs.get('source_url', '')}) · "
-            f"retrieved {universe_updated} · {len(company_universe):,} eligible company records. "
-            + (
-                "The combined file was unavailable, so the display is falling back to the NSE-only list. "
-                if company_universe.attrs.get("fallback")
-                else "The daily file includes NSE-listed and BSE-exclusive securities. "
-            )
-            + "Sector is unavailable in this source."
-        )
-        st.dataframe(
-            matches.head(100), use_container_width=True, hide_index=True,
-            column_config={"isin": "ISIN", "symbol": "Ticker", "company_name": "Company", "listing_date": "Listing date"},
-        )
-        if len(matches) > 100:
-            st.caption("Showing the first 100 matches. Refine your search to see a specific company.")
+        return str(st.secrets.get(name, default))
+    except Exception:
+        return default
 
-        if not matches.empty:
-            options = {
-                f"{row.company_name} ({row.symbol})": row.symbol
-                for row in matches.head(100).itertuples(index=False)
-            }
-            research_label = st.selectbox("Company to research", list(options), key="research_company")
-            if st.button("Load company research", key="load_research"):
-                with st.spinner("Loading available company profile and annual figures…"):
-                    try:
-                        st.session_state["company_research"] = load_company_research(options[research_label], "NSE")
-                    except Exception as error:
-                        st.session_state["company_research_error"] = str(error)
-                        st.session_state.pop("company_research", None)
 
-        research = st.session_state.get("company_research")
-        if research:
-            st.subheader(research.get("company_name") or research["symbol"])
-            st.caption(
-                f"Source: [{research['provider']}]({research['source_url']}) · "
-                f"retrieved {research['retrieved_at']}"
-            )
-            if research.get("business_summary"):
-                st.write(research["business_summary"])
+def _daily_price_frame(prices: pd.DataFrame) -> pd.DataFrame:
+    result = prices.copy()
+    index = pd.DatetimeIndex(pd.to_datetime(result.index))
+    if index.tz is not None:
+        index = index.tz_localize(None)
+    result.index = index.normalize()
+    return result[~result.index.duplicated(keep="last")].sort_index()
+
+
+def _show_overview(data: dict[str, Any]) -> None:
+    summary, prices = data["summary"], data["prices"]
+    price, change = None, None
+    if prices is not None and not prices.empty:
+        closes = prices["Close"].dropna()
+        if not closes.empty:
+            price = float(closes.iloc[-1])
+            if len(closes) > 1 and closes.iloc[-2] != 0:
+                change = price / float(closes.iloc[-2]) - 1
+
+    cards = st.columns(4)
+    cards[0].metric("Current price", "—" if price is None else f"₹{price:,.2f}")
+    cards[1].metric(
+        "24h change", "—" if change is None else f"{change:+.2%}",
+        delta=None if change is None else f"{change:+.2%}", delta_color="normal",
+    )
+    cards[2].metric("Overall sentiment", f"{summary['average_sentiment_score']:+.2f}")
+    cards[3].metric("AI status · sentiment only", sentiment_label_to_status(summary["classification"]))
+    st.caption("24h change means the latest available daily close-to-close move. The Buy/Sell/Hold label is mapped from headline sentiment; it is not an investment recommendation.")
+
+    st.subheader("Price and daily news sentiment")
+    if prices is None or prices.empty:
+        st.warning(data["price_error"] or "OHLC price data is unavailable for this ticker/provider.")
+        return
+    days = _daily_price_frame(prices)
+    sentiment = daily_headline_sentiment(data["articles"])
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Candlestick(
+        x=days.index, open=days["Open"], high=days["High"],
+        low=days["Low"], close=days["Close"], name="OHLC price",
+        increasing_line_color="#26c99a", decreasing_line_color="#ff647c",
+    ), secondary_y=False)
+    if not sentiment.empty:
+        fig.add_trace(go.Scatter(
+            x=sentiment.index, y=sentiment.values, name="Daily headline sentiment",
+            mode="lines+markers", line={"color": "#59a9ff", "width": 2},
+            marker={"size": 7}, connectgaps=False,
+        ), secondary_y=True)
+    fig.update_layout(
+        template="plotly_dark", height=520, paper_bgcolor="#070b12",
+        plot_bgcolor="#0a111b", margin={"l": 12, "r": 12, "t": 24, "b": 8},
+        xaxis_rangeslider_visible=False, hovermode="x unified",
+        legend={"orientation": "h", "y": 1.08, "x": 0},
+    )
+    fig.update_yaxes(title_text="Price (INR)", secondary_y=False, gridcolor="#1d2b3e")
+    fig.update_yaxes(title_text="Sentiment (-1 to +1)", range=[-1, 1], secondary_y=True, showgrid=False)
+    fig.update_xaxes(gridcolor="#1d2b3e")
+    st.plotly_chart(fig, use_container_width=True)
+    source_exchange = prices.attrs.get("exchange", data["exchange"])
+    st.caption(f"Price provider: Yahoo Finance via yfinance · actual source exchange: {source_exchange} · retrieved {data['retrieved_at']}")
+    correlation = data["comparison"]["correlation"]
+    st.metric("Same-day sentiment / return correlation", "Unavailable" if correlation is None else f"{correlation:+.2f}")
+    st.caption("Pearson correlation uses matching publication/trading dates. Correlation does not imply causation.")
+
+
+def _show_sentiment(data: dict[str, Any]) -> None:
+    summary = data["summary"]
+    cards = st.columns(4)
+    cards[0].metric("Positive headlines", f"{summary['positive_percentage']:.1f}%", f"{summary['positive_articles']} articles")
+    cards[1].metric("Neutral headlines", f"{summary['neutral_percentage']:.1f}%", f"{summary['neutral_articles']} articles")
+    cards[2].metric("Negative headlines", f"{summary['negative_percentage']:.1f}%", f"{summary['negative_articles']} articles")
+    cards[3].metric("Mean sentiment score", f"{summary['average_sentiment_score']:+.3f}")
+    if any(a.get("source") == "Sample Data" for a in data["articles"]):
+        st.warning("Some headlines are sample placeholders because the news feed returned no usable articles. Treat their sentiment as demo data.")
+
+    st.subheader("Most frequent headline keywords")
+    keywords = top_headline_keywords(data["articles"], limit=10)
+    if keywords.empty:
+        st.info("There are not enough headlines to calculate keyword polarity.")
+    else:
+        colors = [
+            "#19d18f" if score > 0.05 else "#ff526f" if score < -0.05 else "#718096"
+            for score in keywords["Average sentiment"]
+        ]
+        bars = go.Figure(go.Bar(
+            x=keywords["Headline count"], y=keywords["Keyword"], orientation="h",
+            marker_color=colors, customdata=keywords[["Average sentiment"]],
+            hovertemplate="%{y}<br>Headline count: %{x}<br>Mean polarity: %{customdata[0]:+.2f}<extra></extra>",
+        ))
+        bars.update_layout(
+            template="plotly_dark", height=390, paper_bgcolor="#070b12",
+            plot_bgcolor="#0a111b", margin={"l": 8, "r": 16, "t": 8, "b": 8},
+            xaxis_title="Headline count", yaxis={"autorange": "reversed", "title": ""},
+        )
+        st.plotly_chart(bars, use_container_width=True)
+        st.caption("Keyword color uses the mean score of headlines containing the term; it is not a separate keyword sentiment model.")
+
+    st.subheader("News and model output")
+    if not data["articles"]:
+        st.info("No articles are available.")
+        return
+    table = pd.DataFrame(data["articles"])
+    columns = [key for key in (
+        "headline", "publication_date", "source", "sentiment",
+        "sentiment_score", "confidence", "article_url",
+    ) if key in table.columns]
+    table = table[columns].rename(columns={
+        "headline": "Headline", "publication_date": "Published",
+        "source": "Publisher", "sentiment": "Sentiment",
+        "sentiment_score": "Score", "confidence": "Confidence",
+        "article_url": "Original article",
+    })
+    st.dataframe(
+        table, use_container_width=True, hide_index=True,
+        column_config={"Original article": st.column_config.LinkColumn("Original article", display_text="Open")},
+    )
+
+
+def _show_whale_flow() -> None:
+    st.warning("Illustrative placeholder only — this view has no live insider, institutional, or options-flow feed.")
+    st.markdown("SEC Form 4 is a U.S. disclosure and is not the relevant filing feed for Indian-listed companies. No verified Indian insider or put/call data source is connected.")
+    left, right = st.columns([1, 1.2])
+    with left:
+        gauge = go.Figure(go.Indicator(
+            mode="gauge+number", value=50,
+            title={"text": "Demo positioning gauge"},
+            number={"suffix": " / 100"},
+            gauge={
+                "axis": {"range": [0, 100], "tickcolor": "#8191a6"},
+                "bar": {"color": "#77879b"}, "bgcolor": "#0a111b",
+                "bordercolor": "#26354a",
+                "steps": [
+                    {"range": [0, 40], "color": "#291622"},
+                    {"range": [40, 60], "color": "#202a38"},
+                    {"range": [60, 100], "color": "#142a26"},
+                ],
+            },
+        ))
+        gauge.update_layout(template="plotly_dark", height=300, paper_bgcolor="#070b12", margin={"t": 45, "b": 8})
+        st.plotly_chart(gauge, use_container_width=True)
+    with right:
+        st.subheader("Hooks for a future verified feed")
+        st.markdown(
+            "- Institutional ownership disclosures and quarter-end changes\n"
+            "- Promoter/insider transactions from exchange filings\n"
+            "- Options put/call ratio, if a licensed consistent source is added\n"
+            "- Timestamp, original source link, and reported instrument per event"
+        )
+        st.caption("The neutral gauge value is a mockup, not an observed positioning estimate.")
+
+
+def _show_deep_dive(data: dict[str, Any], api_key: str, model: str) -> None:
+    context = build_analysis_context(data)
+    local = local_deep_dive(data)
+    st.subheader("Executive summary")
+    st.write(local["executive_summary"])
+    st.caption("The summary below is based only on the selected headlines; it is not a forecast.")
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Risk analysis")
+        if local["risks"]:
+            for item in local["risks"]:
+                st.markdown(f"- **{item.get('publication_date') or 'Date unavailable'} · {item.get('source', 'Publisher unavailable')}** — {item['headline']}")
+        else:
+            st.info("No negative headlines appeared in this sample; that does not mean risks are absent.")
+    with right:
+        st.subheader("Catalyst timeline")
+        if local["catalysts"]:
+            for item in local["catalysts"]:
+                st.markdown(f"- **{item.get('publication_date') or 'Date unavailable'}** — {item['headline']}")
+        else:
+            st.info("No positive headline catalysts were identified in this sample.")
+
+    if st.button("Generate AI deep dive", type="primary", disabled=not api_key):
+        try:
+            with st.spinner("Preparing a sourced executive review…"):
+                st.session_state["deep_dive_text"] = generate_deep_dive(context, api_key, model)
+                st.session_state["deep_dive_symbol"] = data["symbol"]
+        except Exception as error:
+            st.error(f"AI review failed; the headline-based summary above remains available. Details: {error}")
+    if not api_key:
+        st.info("Add an API key in the sidebar to generate an AI-written synthesis.")
+    elif st.session_state.get("deep_dive_symbol") == data["symbol"] and st.session_state.get("deep_dive_text"):
+        st.markdown("#### AI deep dive")
+        st.markdown(st.session_state["deep_dive_text"])
+
+    with st.expander("Company profile and exchange filings"):
+        try:
+            profile = fetch_company_research(data["symbol"], data["exchange"])
+            if profile.get("business_summary"):
+                st.write(profile["business_summary"])
             else:
-                st.info("Business overview is not available from the profile provider.")
-            ratio_labels = [
-                ("Sector", "sector", None), ("Industry", "industry", None),
-                ("Market cap", "market_cap", "₹"), ("P/E", "trailing_pe", None),
-                ("Price/book", "price_to_book", None), ("ROE", "return_on_equity", "%"),
-                ("Profit margin", "profit_margin", "%"),
-            ]
-            cols = st.columns(4)
-            for index, (label, key, suffix) in enumerate(ratio_labels):
-                value = research.get(key)
-                if value is None:
-                    shown = "Not available"
-                elif suffix == "%":
-                    shown = f"{value * 100:.2f}%"
-                elif suffix == "₹":
-                    shown = f"₹{value:,.0f}"
-                else:
-                    shown = str(value)
-                cols[index % len(cols)].metric(label, shown)
-            if research.get("annual_performance"):
-                currency = research.get("financial_currency") or "provider currency not specified"
-                st.markdown(f"**Annual financial performance (provider-reported; {currency})**")
-                st.dataframe(pd.DataFrame(research["annual_performance"]), use_container_width=True, hide_index=True)
+                st.info("Business overview is unavailable from the profile provider.")
+            st.caption(f"Provider: {profile['provider']} · Retrieved {profile['retrieved_at']} · [Company profile]({profile['source_url']})")
+            st.warning(profile["limitations"])
+        except Exception as error:
+            st.info(f"Company profile unavailable for this ticker/provider: {error}")
+        st.markdown("[NSE corporate announcements](https://www.nseindia.com/companies-listing/corporate-filings) · [NSE financial results](https://www.nseindia.com/companies-listing/corporate-filings-financial-results)")
+
+    st.divider()
+    st.subheader("Ask the research assistant")
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+    for message in st.session_state["chat_history"]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+    question = st.chat_input("Ask about risks, catalysts, headlines, or price data")
+    if question:
+        previous_history = st.session_state["chat_history"][:]
+        st.session_state["chat_history"].append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
+        with st.chat_message("assistant"):
+            if api_key:
+                try:
+                    answer = answer_question(question, context, previous_history, api_key, model)
+                except Exception as error:
+                    answer = f"AI service error: {error}. Check the key and try again."
             else:
-                st.info("Annual revenue and profit history is not available from this provider for the selected company.")
-            st.warning(research["limitations"])
-            st.markdown(
-                "Exchange filing starting points: "
-                "[NSE corporate filings and announcements](https://www.nseindia.com/companies-listing/corporate-filings) · "
-                "[NSE financial results](https://www.nseindia.com/companies-listing/corporate-filings-financial-results)"
-            )
-            st.caption(
-                "Annual report documents and page-level citations are not yet extracted or summarized. "
-                "Use the exchange/company filing itself to verify strategy, capex, plans, risks, and reported figures."
-            )
-        if st.session_state.get("company_research_error"):
-            st.error(f"Company research could not be loaded: {st.session_state['company_research_error']}")
-    except CompanyUniverseError as error:
-        st.warning(f"The live NSE company list is unavailable: {error}")
-        st.info("The current sentiment dashboard remains available using its existing seven-stock selector.")
+                answer = "Configure an API key in the sidebar for contextual AI answers. The headline evidence and sentiment labels are available above."
+            st.markdown(answer)
+        st.session_state["chat_history"].append({"role": "assistant", "content": answer})
+
+
+st.title("AlphaPulse // AI Market Terminal")
+st.caption("Indian equities · headline sentiment · OHLC price action · research assistant")
 
 with st.sidebar:
-    st.header("Analysis settings")
-    display_choices = [f"{symbol} — {company}" for symbol, company in COMPANY_NAMES.items()]
-    selected_choice = st.selectbox("Select an Indian stock", display_choices)
-    selected_symbol = selected_choice.split(" — ", maxsplit=1)[0]
-    selected_exchange = st.selectbox("Exchange", ["NSE", "BSE"], index=0)
-    selected_period = st.selectbox(
-        "Price history",
-        ["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"],
-        index=3,
-    )
-    article_limit = st.slider("Number of recent headlines", min_value=5, max_value=20, value=10)
-    analyze_clicked = st.button("Analyze stock", type="primary", use_container_width=True)
-    st.divider()
-    st.caption("A classroom summary is always available; an OpenAI key can add a generated summary.")
-
-if analyze_clicked:
-    with st.spinner("Collecting news, analyzing headlines, and loading prices…"):
-        try:
-            st.session_state["analysis_result"] = run_analysis(
-                selected_symbol,
-                selected_exchange,
-                selected_period,
-                article_limit,
-            )
-        except Exception as error:
-            st.error(f"The analysis could not be completed: {error}")
-            st.session_state.pop("analysis_result", None)
-
-result = st.session_state.get("analysis_result")
-if result is None:
-    st.info("Choose a stock and select **Analyze stock** to load its news, sentiment, and price history.")
-else:
-    st.markdown(f"### {result['company_name']} · {result['symbol']} · {result['exchange']}")
-    st.caption(f"Analysis run on {result['analyzed_on']} · prices shown in Indian rupees (INR)")
-
-    st.subheader("Stock price information")
-    show_price_information(result)
-
-    summary = result["summary"]
-    st.subheader("Overall sentiment")
-    overall_col, score_col, positive_col, neutral_col, negative_col = st.columns(5)
-    overall_col.metric("Classification", summary["classification"])
-    score_col.metric("Average score", f"{summary['average_sentiment_score']:+.3f}")
-    positive_col.metric("Positive", f"{summary['positive_percentage']:.2f}%")
-    neutral_col.metric("Neutral", f"{summary['neutral_percentage']:.2f}%")
-    negative_col.metric("Negative", f"{summary['negative_percentage']:.2f}%")
-    st.caption(
-        f"Based on {summary['article_count']} headlines: "
-        f"{summary['positive_articles']} positive, {summary['neutral_articles']} neutral, "
-        f"and {summary['negative_articles']} negative."
-    )
-    with st.expander("How the calculations work"):
-        st.markdown(
-            "- **Headline score:** FinBERT positive probability minus negative probability, from -1 to +1.\n"
-            "- **Average sentiment:** the mean of the headline scores.\n"
-            "- **Classification:** Bullish at 0.25 or above; Bearish at -0.25 or below; Neutral between those values.\n"
-            "- **Daily return:** today’s adjusted closing price divided by the previous trading day’s adjusted close, minus 1."
-        )
-
-    show_sentiment_charts(result)
-    show_stock_price_chart(result)
-    show_sentiment_price_analysis(result)
-    show_news_table(result["articles"])
-
-    st.subheader("AI-generated summary")
-    if result["ai_summary"]:
-        st.write(result["ai_summary"])
-    elif result["summary_error"] and "OPENAI_API_KEY" in result["summary_error"]:
-        st.info(
-            "AI summary is not configured yet. Set the OPENAI_API_KEY environment variable "
-            "and run the analysis again. The news, sentiment, and price sections work without it."
-        )
+    st.header("Terminal controls")
+    universe, universe_error = None, None
+    try:
+        universe, universe_updated = load_universe()
+    except Exception as error:
+        universe_error = str(error)
+        universe_updated = None
+    ticker_names = dict(INDIAN_STOCKS)
+    if universe is not None and not universe.empty:
+        ticker_names.update(dict(zip(universe["symbol"], universe["company_name"])))
+        ticker_values = universe["symbol"].drop_duplicates().tolist()
     else:
-        st.warning(f"The AI summary could not be generated: {result['summary_error']}")
+        ticker_values = list(INDIAN_STOCKS)
+    ticker_values = list(dict.fromkeys([s for s in INDIAN_STOCKS if s in ticker_values] + ticker_values))
+    selected_symbol = st.selectbox(
+        "Ticker", ticker_values, index=0,
+        format_func=lambda symbol: f"{symbol} — {ticker_names.get(symbol, symbol)}",
+    )
+    manual_symbol = st.text_input("Or enter ticker", placeholder="e.g. RELIANCE").strip().upper()
+    if manual_symbol:
+        selected_symbol = manual_symbol
+        ticker_names.setdefault(selected_symbol, selected_symbol)
+    selected_exchange = st.selectbox("Exchange for price history", ["NSE", "BSE"], index=0)
+    today = date.today()
+    date_range = st.date_input(
+        "Date range", value=(today - timedelta(days=180), today),
+        min_value=today - timedelta(days=3650), max_value=today,
+    )
+    api_key_input = st.text_input(
+        "OpenAI API key (optional)", type="password",
+        help="Used for requests in this session only; this app does not save it.",
+    )
+    api_key = api_key_input or _secret("OPENAI_API_KEY")
+    model = _secret("OPENAI_MODEL", DEFAULT_MODEL)
+    analyze_clicked = st.button("Run analysis", type="primary", use_container_width=True)
+    if universe_error:
+        st.caption("Company list unavailable; showing the seven built-in example tickers.")
+    elif universe is not None:
+        st.caption(f"Official company list retrieved {universe_updated} · {len(universe):,} records")
+    st.caption("AI status is sentiment-derived, not investment advice.")
 
-st.divider()
-st.caption(
-    "This application is developed for academic and educational purposes only "
-    "and does not constitute investment advice."
-)
+valid_dates = isinstance(date_range, (tuple, list)) and len(date_range) == 2
+if not valid_dates:
+    st.warning("Select both a start and end date.")
+else:
+    start_date, end_date = date_range
+    if start_date > end_date:
+        st.warning("The start date must be on or before the end date.")
+        valid_dates = False
+
+if analyze_clicked and valid_dates:
+    try:
+        with st.spinner(f"Loading {selected_symbol}: headlines, sentiment, and prices…"):
+            result = load_analysis(
+                selected_symbol, ticker_names.get(selected_symbol, selected_symbol),
+                selected_exchange, start_date.isoformat(), end_date.isoformat(), 20,
+            )
+        st.session_state["terminal_analysis"] = result
+        st.session_state["chat_history"] = []
+        st.session_state.pop("deep_dive_text", None)
+        st.session_state.pop("deep_dive_symbol", None)
+    except Exception as error:
+        st.error(f"Analysis could not be completed: {error}")
+
+analysis = st.session_state.get("terminal_analysis")
+if analysis is None:
+    st.info("Choose a ticker and date range in the sidebar, then run an analysis to open the terminal views.")
+else:
+    st.markdown(f"### {analysis['company_name']} · {analysis['symbol']} · {analysis['exchange']}")
+    st.caption(f"Analysis window: {analysis['start_date']} to {analysis['end_date']} · retrieved {analysis['retrieved_at']}")
+    overview_tab, sentiment_tab, whale_tab, ai_tab = st.tabs([
+        "📊 Market Overview", "📰 Sentiment Engine",
+        "🐳 Whale & Insider Flow", "🤖 AI Deep-Dive",
+    ])
+    with overview_tab:
+        _show_overview(analysis)
+    with sentiment_tab:
+        _show_sentiment(analysis)
+    with whale_tab:
+        _show_whale_flow()
+    with ai_tab:
+        _show_deep_dive(analysis, api_key, model)
+    st.divider()
+    st.caption("Educational use only; not investment advice. Verify every headline and filing at its original source. Sentiment does not establish causation or predict returns.")
+
