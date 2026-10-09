@@ -1,6 +1,6 @@
 """Free news collection through Google News RSS search results."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import calendar
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -15,7 +15,7 @@ class GoogleNewsRSSProvider:
 
     def fetch_news(self, company_name: str, limit: int = 10) -> list[dict[str, str]]:
         """Search for recent financial news and return standard news fields."""
-        query = f'"{company_name}" stock OR shares OR finance'
+        query = f'"{company_name}" stock OR shares OR finance when:30d'
         query_string = urlencode({"q": query, "hl": "en-IN", "gl": "IN", "ceid": "IN:en"})
         request = Request(
             f"{self.feed_url}?{query_string}",
@@ -29,10 +29,18 @@ class GoogleNewsRSSProvider:
         feed = feedparser.parse(feed_content)
         news_items: list[dict[str, str]] = []
 
-        for entry in feed.entries[:limit]:
+        for entry in feed.entries:
             source_details = entry.get("source", {})
             source_name = source_details.get("title", "Google News")
             published_date = _get_publication_date(entry)
+            # RSS search may still return stale items; keep only dated items
+            # from the last 30 days for the recent-news display.
+            if published_date:
+                try:
+                    if date.fromisoformat(published_date) < date.today() - timedelta(days=30):
+                        continue
+                except ValueError:
+                    continue
 
             news_items.append(
                 {
@@ -42,6 +50,8 @@ class GoogleNewsRSSProvider:
                     "article_url": entry.get("link", ""),
                 }
             )
+            if len(news_items) >= limit:
+                break
 
         return news_items
 
