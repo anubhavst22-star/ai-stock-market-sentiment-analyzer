@@ -129,3 +129,4 @@ def fetch_stock_data(
     prices.attrs["requested_exchange"] = requested_exchange
     prices.attrs["currency"] = "INR"
     return prices
+
