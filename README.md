@@ -1,16 +1,8 @@
 # AI Stock Market Sentiment Analyzer
 
-A beginner-friendly Streamlit project for exploring Indian stock prices and financial-news headline sentiment. It is intended for classroom demonstrations and academic study.
+A beginner-friendly Streamlit project for exploring Indian company news, headline sentiment, and historical prices. It includes a searchable NSE equity directory and an optional company research panel. Existing sentiment, stock return, chart, correlation, and summary features remain available.
 
-## What the dashboard shows
-
-- Recent headlines for a selected Indian company, with positive, neutral, or negative sentiment.
-- An average sentiment score from -1 to +1 and a Bullish, Neutral, or Bearish label.
-- Historical adjusted prices, daily returns, and sentiment charts.
-- A same-day comparison of news sentiment and stock returns, including Pearson correlation.
-- A short classroom summary. If the optional OpenAI service is unavailable, the dashboard creates a transparent summary from the displayed calculations instead.
-
-## Run on Windows
+## Run locally on Windows
 
 Install Python 3.12, open PowerShell in this folder, and run:
 
@@ -20,24 +12,29 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-Keep PowerShell open while you use the dashboard. Streamlit prints a local address, usually `http://localhost:8501`.
+Keep PowerShell open while using the app. Streamlit prints a local address, usually `http://localhost:8501`.
 
-## Deploy or update the public demo
+## Data sources and coverage
 
-This repository is connected to Streamlit Community Cloud. For a new deployment, sign in at [share.streamlit.io](https://share.streamlit.io), choose **Create app**, then select this repository, the `main` branch, and `app.py`. After deployment, commits to `main` are picked up by the app automatically.
+- **Company directory:** the official NSE downloadable equity security list (`EQUITY_L.csv`). It is cached for six hours and the app displays its retrieval timestamp. Search supports company name, NSE symbol, and ISIN.
+- **Coverage limitation:** the directory currently represents the NSE file only. BSE-exclusive companies are not included; a current stable, public BSE-wide machine-readable source could not be verified. NSE does not provide sector in this CSV, so sector is shown as unavailable. Duplicate NSE symbol/ISIN rows are removed.
+- **Company profile and financial history:** Yahoo Finance through `yfinance` (a secondary aggregator). Company overview, ratios, and annual revenue/net income are shown only when supplied. Values can be missing or differ from audited exchange filings. The app links to NSE filing pages for verification.
+- **Annual reports and announcements:** direct exchange filing pages are provided as starting points. The application does not yet download and summarize annual report PDFs, extract page references, or ingest the complete exchange announcement feed. Do not treat the research panel as a substitute for primary filings.
+- **News:** Google News RSS search results, with publisher and original article links when supplied. The feed is an aggregator and can be incomplete. Sample rows are identified in the news table when the feed has no result or fails.
+- **Prices:** Yahoo Finance through `yfinance`. The selected data source/exchange is shown in the price section.
+- **Sentiment:** FinBERT is attempted first; VADER is the fallback. Sentiment describes headline text, not the truth or materiality of an event.
+- **AI summary:** an OpenAI API key is optional. When configured, store it in `.streamlit/secrets.toml` for local use or Streamlit Community Cloud secrets. Never commit keys. The rest of the app works without one.
 
-Community Cloud may put an app to sleep after 12 hours without visits. Opening the public app wakes it again; its shared URL stays the same.
+## Test the exchange-list module
 
-## Data and model notes
+Tests use a small synthetic CSV fixture and do not call an external service:
 
-News comes from Google News RSS, with clearly marked sample headlines when the feed is unavailable. Historical prices come from Yahoo Finance through `yfinance`. FinBERT is attempted first; VADER is used if FinBERT cannot be loaded. The first FinBERT run may take longer because model files need to be downloaded. The AI-generated summary uses the OpenAI API when `OPENAI_API_KEY` is configured; otherwise a rule-based classroom summary is shown so the app remains usable without an API account.
-
-For a local OpenAI summary, create `.streamlit/secrets.toml` and add:
-
-```toml
-OPENAI_API_KEY = "your-api-key"
+```powershell
+py -3.12 -m unittest discover -s tests -v
 ```
 
-Do not commit API keys to GitHub. No key is required for the rest of the dashboard.
+## Deploy on Streamlit Community Cloud
+
+The repository can be selected at [Streamlit Community Cloud](https://share.streamlit.io). Choose the repository, `main` branch, and `app.py`. A new commit to the deployed branch triggers a rebuild. A local code change does not update the public app until it has been pushed and the cloud build has succeeded.
 
 > This application is developed for academic and educational purposes only and does not constitute investment advice. Correlation does not imply causation.
