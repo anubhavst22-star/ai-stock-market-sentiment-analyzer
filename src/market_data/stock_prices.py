@@ -43,6 +43,8 @@ def fetch_stock_data(
     symbol: str,
     exchange: str = "NSE",
     period: str = "1y",
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> pd.DataFrame:
     """Get historical daily prices and add a ``Daily Return`` column.
 
@@ -90,9 +92,15 @@ def fetch_stock_data(
     for candidate_symbol, candidate_exchange in symbols_to_try:
         try:
             # auto_adjust=True adjusts historical prices for corporate actions.
-            candidate_prices = yf.Ticker(candidate_symbol).history(
-                period=period, auto_adjust=True
-            )
+            ticker = yf.Ticker(candidate_symbol)
+            if start_date or end_date:
+                candidate_prices = ticker.history(
+                    start=start_date,
+                    end=end_date,
+                    auto_adjust=True,
+                )
+            else:
+                candidate_prices = ticker.history(period=period, auto_adjust=True)
         except Exception as error:
             last_error = error
             continue
