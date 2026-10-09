@@ -350,22 +350,29 @@ st.caption("A student dashboard for exploring financial headlines, sentiment, an
 
 with st.expander("Company directory and research", expanded=False):
     st.markdown(
-        "Search the current NSE equity security file by company name, ticker, or ISIN. "
-        "The exchange file does not publish sector classifications. BSE-exclusive companies "
-        "are not included because a stable, public BSE-wide file could not be verified."
+        "Search the current combined NSE and BSE-exclusive equity security file by company name, ticker, or ISIN. "
+        "The exchange file does not publish sector classifications. BSE-exclusive companies may not have "
+        "historical prices in the existing Yahoo Finance price module."
     )
     try:
         company_universe, universe_updated = load_company_universe()
         COMPANY_NAMES.update(dict(zip(company_universe["symbol"], company_universe["company_name"])))
-        exchange_filter = st.selectbox("Exchange filter", ["All", "NSE", "BSE"], key="company_exchange_filter")
+        exchange_filter = st.selectbox(
+            "Exchange filter", ["All", "NSE", "BSE exclusive"], key="company_exchange_filter"
+        )
         sector_options = sorted(company_universe["sector"].dropna().unique().tolist())
         sector_filter = st.selectbox("Sector filter", ["All", *sector_options], key="company_sector_filter")
         company_query = st.text_input("Search company, ticker, or ISIN", key="company_query")
         matches = search_companies(company_universe, company_query, exchange_filter, sector_filter)
         st.caption(
-            f"Source: [NSE official equity list]({company_universe.attrs.get('source_url', '')}) · "
-            f"retrieved {universe_updated} · {len(company_universe):,} NSE records. "
-            "Sector is unavailable in this source."
+            f"Source: [NSE daily combined security master]({company_universe.attrs.get('source_url', '')}) · "
+            f"retrieved {universe_updated} · {len(company_universe):,} eligible company records. "
+            + (
+                "The combined file was unavailable, so the display is falling back to the NSE-only list. "
+                if company_universe.attrs.get("fallback")
+                else "The daily file includes NSE-listed and BSE-exclusive securities. "
+            )
+            + "Sector is unavailable in this source."
         )
         st.dataframe(
             matches.head(100), use_container_width=True, hide_index=True,
