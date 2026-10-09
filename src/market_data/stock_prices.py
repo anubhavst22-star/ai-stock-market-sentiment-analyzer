@@ -55,7 +55,8 @@ def fetch_stock_data(
     if not cleaned_symbol:
         raise ValueError("Please provide a stock symbol, such as RELIANCE.")
 
-    cleaned_exchange = exchange.strip().upper()
+    requested_exchange = exchange.strip().upper()
+    cleaned_exchange = requested_exchange
     if cleaned_exchange not in {"NSE", "BSE"}:
         raise ValueError("Exchange must be either 'NSE' or 'BSE'.")
 
@@ -73,36 +74,58 @@ def fetch_stock_data(
         suffix = ".NS" if cleaned_exchange == "NSE" else ".BO"
         yahoo_symbol = f"{cleaned_symbol}{suffix}"
 
-    try:
-        # auto_adjust=True adjusts historical prices for corporate actions.
-        prices = yf.Ticker(yahoo_symbol).history(period=period, auto_adjust=True)
-    except Exception as error:
-        raise MarketDataError(
-            f"Could not retrieve price data for {yahoo_symbol}. "
-            "Check your internet connection, stock symbol, and selected period."
-        ) from error
+    symbols_to_try = [(yahoo_symbol, cleaned_exchange)]
+    if requested_exchange == "BSE" and not symbol.strip().upper().endswith(".NS"):
+        # Yahoo Finance sometimes has a live BSE quote but no BSE history. Since
+        # these companies also trade on NSE, use NSE history as a disclosed backup.
+        bse_to_nse_symbol = {code: name for name, code in BSE_SCRIP_CODES.items()}
+        nse_symbol = cleaned_symbol.removesuffix(".BO")
+        nse_symbol = bse_to_nse_symbol.get(nse_symbol, nse_symbol)
+        symbols_to_try.append((f"{nse_symbol}.NS", "NSE"))
 
-    if prices is None or prices.empty:
+    prices = None
+    used_symbol = yahoo_symbol
+    actual_exchange = cleaned_exchange
+    last_error = None
+    for candidate_symbol, candidate_exchange in symbols_to_try:
+        try:
+            # auto_adjust=True adjusts historical prices for corporate actions.
+            candidate_prices = yf.Ticker(candidate_symbol).history(
+                period=period, auto_adjust=True
+            )
+        except Exception as error:
+            last_error = error
+            continue
+
+        # A single quote is not enough to calculate a daily return. If BSE
+        # history is sparse, the loop can use the NSE history backup instead.
+        if (
+            candidate_prices is None
+            or len(candidate_prices) < 2
+            or "Close" not in candidate_prices.columns
+        ):
+            continue
+
+        prices = candidate_prices
+        used_symbol = candidate_symbol
+        actual_exchange = candidate_exchange
+        break
+
+    if prices is None:
+        if last_error is not None:
+            raise MarketDataError(
+                f"Could not retrieve enough price history for {yahoo_symbol}. "
+                "Check your internet connection, stock symbol, and selected period."
+            ) from last_error
         raise MarketDataError(
-            f"No price history was returned for {yahoo_symbol}. "
-            "Check that the symbol is listed and try another period."
+            f"No usable price history was returned for {yahoo_symbol}. "
+            "At least two trading days with closing prices are needed."
         )
-
-    # A single quote can be returned for an invalid symbol. It is not enough to
-    # calculate a daily return, and presenting it as valid historical data is
-    # misleading. Fail clearly so the dashboard can show its graceful fallback.
-    if len(prices) < 2:
-        raise MarketDataError(
-            f"Only one price point was returned for {yahoo_symbol}; at least two "
-            "trading days are needed to calculate daily returns."
-        )
-
-    if "Close" not in prices.columns:
-        raise MarketDataError(f"Price data for {yahoo_symbol} does not include a closing price.")
 
     prices = prices.copy()
     prices["Daily Return"] = prices["Close"].pct_change()
-    prices.attrs["symbol"] = yahoo_symbol
-    prices.attrs["exchange"] = cleaned_exchange
+    prices.attrs["symbol"] = used_symbol
+    prices.attrs["exchange"] = actual_exchange
+    prices.attrs["requested_exchange"] = requested_exchange
     prices.attrs["currency"] = "INR"
     return prices
