@@ -1,8 +1,13 @@
 """Offline tests for parsing and searching the exchange company list."""
 
+import gzip
 import unittest
 
-from src.market_data.company_universe import normalize_nse_equity_csv, search_companies
+from src.market_data.company_universe import (
+    normalize_nse_equity_csv,
+    normalize_nse_security_master,
+    search_companies,
+)
 
 
 class CompanyUniverseTests(unittest.TestCase):
@@ -30,6 +35,21 @@ class CompanyUniverseTests(unittest.TestCase):
         companies = normalize_nse_equity_csv(self.csv)
         self.assertEqual(len(search_companies(companies, exchange="NSE")), 2)
         self.assertEqual(len(search_companies(companies, exchange="BSE")), 0)
+
+    def test_combined_master_includes_bse_exclusive_equities(self):
+        master = (
+            "TckrSymb,SctyNm,ISIN,SctySrs,ListgDt,PrtdToTrad\n"
+            "ALPHA,Alpha Industries Limited,INE000A01000,EQ,2000-01-01,0\n"
+            "BETA$,Beta Finance Limited,INE000B01000,EQ,2001-02-02,2\n"
+            "BOND,Example Bond,INE000C01000,DB,2002-03-03,0\n"
+        ).encode("utf-8")
+        companies = normalize_nse_security_master(gzip.compress(master))
+        self.assertEqual(len(companies), 2)
+        self.assertEqual(set(companies["exchange"]), {"NSE", "BSE exclusive"})
+        self.assertEqual(
+            search_companies(companies, "INE000B01000", exchange="BSE exclusive").iloc[0]["symbol"],
+            "BETA$",
+        )
 
 
 if __name__ == "__main__":
