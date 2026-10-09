@@ -22,6 +22,18 @@ INDIAN_STOCKS: Final[dict[str, str]] = {
     "TATAMOTORS": "Tata Motors",
 }
 
+# Yahoo Finance identifies many BSE listings by their six-digit BSE scrip code.
+# These codes are the BSE equivalents of the beginner-friendly symbols above.
+BSE_SCRIP_CODES: Final[dict[str, str]] = {
+    "RELIANCE": "500325",
+    "HDFCBANK": "500180",
+    "TCS": "532540",
+    "INFY": "500209",
+    "ICICIBANK": "532174",
+    "SBIN": "500112",
+    "TATAMOTORS": "500570",
+}
+
 
 class MarketDataError(Exception):
     """A clear error raised when stock price data cannot be retrieved."""
@@ -51,9 +63,13 @@ def fetch_stock_data(
         yahoo_symbol = cleaned_symbol
         cleaned_exchange = "NSE"
     elif cleaned_symbol.endswith(".BO"):
-        yahoo_symbol = cleaned_symbol
+        bse_symbol = cleaned_symbol[:-3]
+        bse_symbol = BSE_SCRIP_CODES.get(bse_symbol, bse_symbol)
+        yahoo_symbol = f"{bse_symbol}.BO"
         cleaned_exchange = "BSE"
     else:
+        if cleaned_exchange == "BSE":
+            cleaned_symbol = BSE_SCRIP_CODES.get(cleaned_symbol, cleaned_symbol)
         suffix = ".NS" if cleaned_exchange == "NSE" else ".BO"
         yahoo_symbol = f"{cleaned_symbol}{suffix}"
 
@@ -72,6 +88,15 @@ def fetch_stock_data(
             "Check that the symbol is listed and try another period."
         )
 
+    # A single quote can be returned for an invalid symbol. It is not enough to
+    # calculate a daily return, and presenting it as valid historical data is
+    # misleading. Fail clearly so the dashboard can show its graceful fallback.
+    if len(prices) < 2:
+        raise MarketDataError(
+            f"Only one price point was returned for {yahoo_symbol}; at least two "
+            "trading days are needed to calculate daily returns."
+        )
+
     if "Close" not in prices.columns:
         raise MarketDataError(f"Price data for {yahoo_symbol} does not include a closing price.")
 
@@ -81,4 +106,3 @@ def fetch_stock_data(
     prices.attrs["exchange"] = cleaned_exchange
     prices.attrs["currency"] = "INR"
     return prices
-
