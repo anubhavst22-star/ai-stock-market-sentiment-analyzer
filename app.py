@@ -10,7 +10,15 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from src.analysis import aggregate_stock_sentiment, analyze_sentiment_vs_returns
-from src.market_data import INDIAN_STOCKS, MarketDataError, fetch_stock_data
+from src.market_data import (
+    INDIAN_STOCKS,
+    MarketDataError,
+    CompanyUniverseError,
+    fetch_company_research,
+    fetch_nse_equity_universe,
+    fetch_stock_data,
+    search_companies,
+)
 from src.news import collect_news
 from src.sentiment import analyze_news
 from src.summary import generate_summary
@@ -21,6 +29,21 @@ st.set_page_config(
     page_icon="📈",
     layout="wide",
 )
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def load_company_universe() -> tuple[pd.DataFrame, str]:
+    """Cache the NSE security list for six hours to reduce exchange requests."""
+    return fetch_nse_equity_universe()
+
+
+@st.cache_data(ttl=12 * 60 * 60, show_spinner=False)
+def load_company_research(symbol: str, exchange: str) -> dict[str, Any]:
+    """Cache secondary-provider fundamentals for half a day."""
+    return fetch_company_research(symbol, exchange)
+
+
+COMPANY_NAMES = dict(INDIAN_STOCKS)
 
 st.markdown(
     """
@@ -42,7 +65,7 @@ st.markdown(
 
 def run_analysis(symbol: str, exchange: str, period: str, article_limit: int) -> dict[str, Any]:
     """Collect data and calculate all dashboard results for the selected stock."""
-    company_name = INDIAN_STOCKS[symbol]
+    company_name = COMPANY_NAMES.get(symbol, symbol)
     raw_articles = collect_news(company_name, limit=article_limit)
     articles = analyze_news(raw_articles)
 
@@ -325,9 +348,100 @@ def show_news_table(articles: list[dict[str, Any]]) -> None:
 st.title("AI Stock Market Sentiment Analyzer")
 st.caption("A student dashboard for exploring financial headlines, sentiment, and historical returns.")
 
+with st.expander("Company directory and research", expanded=False):
+    st.markdown(
+        "Search the current NSE equity security file by company name, ticker, or ISIN. "
+        "The exchange file does not publish sector classifications. BSE-exclusive companies "
+        "are not included because a stable, public BSE-wide file could not be verified."
+    )
+    try:
+        company_universe, universe_updated = load_company_universe()
+        COMPANY_NAMES.update(dict(zip(company_universe["symbol"], company_universe["company_name"])))
+        exchange_filter = st.selectbox("Exchange filter", ["All", "NSE", "BSE"], key="company_exchange_filter")
+        sector_options = sorted(company_universe["sector"].dropna().unique().tolist())
+        sector_filter = st.selectbox("Sector filter", ["All", *sector_options], key="company_sector_filter")
+        company_query = st.text_input("Search company, ticker, or ISIN", key="company_query")
+        matches = search_companies(company_universe, company_query, exchange_filter, sector_filter)
+        st.caption(
+            f"Source: [NSE official equity list]({company_universe.attrs.get('source_url', '')}) · "
+            f"retrieved {universe_updated} · {len(company_universe):,} NSE records. "
+            "Sector is unavailable in this source."
+        )
+        st.dataframe(
+            matches.head(100), use_container_width=True, hide_index=True,
+            column_config={"isin": "ISIN", "symbol": "Ticker", "company_name": "Company", "listing_date": "Listing date"},
+        )
+        if len(matches) > 100:
+            st.caption("Showing the first 100 matches. Refine your search to see a specific company.")
+
+        if not matches.empty:
+            options = {
+                f"{row.company_name} ({row.symbol})": row.symbol
+                for row in matches.head(100).itertuples(index=False)
+            }
+            research_label = st.selectbox("Company to research", list(options), key="research_company")
+            if st.button("Load company research", key="load_research"):
+                with st.spinner("Loading available company profile and annual figures…"):
+                    try:
+                        st.session_state["company_research"] = load_company_research(options[research_label], "NSE")
+                    except Exception as error:
+                        st.session_state["company_research_error"] = str(error)
+                        st.session_state.pop("company_research", None)
+
+        research = st.session_state.get("company_research")
+        if research:
+            st.subheader(research.get("company_name") or research["symbol"])
+            st.caption(
+                f"Source: [{research['provider']}]({research['source_url']}) · "
+                f"retrieved {research['retrieved_at']}"
+            )
+            if research.get("business_summary"):
+                st.write(research["business_summary"])
+            else:
+                st.info("Business overview is not available from the profile provider.")
+            ratio_labels = [
+                ("Sector", "sector", None), ("Industry", "industry", None),
+                ("Market cap", "market_cap", "₹"), ("P/E", "trailing_pe", None),
+                ("Price/book", "price_to_book", None), ("ROE", "return_on_equity", "%"),
+                ("Profit margin", "profit_margin", "%"),
+            ]
+            cols = st.columns(4)
+            for index, (label, key, suffix) in enumerate(ratio_labels):
+                value = research.get(key)
+                if value is None:
+                    shown = "Not available"
+                elif suffix == "%":
+                    shown = f"{value * 100:.2f}%"
+                elif suffix == "₹":
+                    shown = f"₹{value:,.0f}"
+                else:
+                    shown = str(value)
+                cols[index % len(cols)].metric(label, shown)
+            if research.get("annual_performance"):
+                currency = research.get("financial_currency") or "provider currency not specified"
+                st.markdown(f"**Annual financial performance (provider-reported; {currency})**")
+                st.dataframe(pd.DataFrame(research["annual_performance"]), use_container_width=True, hide_index=True)
+            else:
+                st.info("Annual revenue and profit history is not available from this provider for the selected company.")
+            st.warning(research["limitations"])
+            st.markdown(
+                "Exchange filing starting points: "
+                "[NSE corporate filings and announcements](https://www.nseindia.com/companies-listing/corporate-filings) · "
+                "[NSE financial results](https://www.nseindia.com/companies-listing/corporate-filings-financial-results)"
+            )
+            st.caption(
+                "Annual report documents and page-level citations are not yet extracted or summarized. "
+                "Use the exchange/company filing itself to verify strategy, capex, plans, risks, and reported figures."
+            )
+        if st.session_state.get("company_research_error"):
+            st.error(f"Company research could not be loaded: {st.session_state['company_research_error']}")
+    except CompanyUniverseError as error:
+        st.warning(f"The live NSE company list is unavailable: {error}")
+        st.info("The current sentiment dashboard remains available using its existing seven-stock selector.")
+
 with st.sidebar:
     st.header("Analysis settings")
-    display_choices = [f"{symbol} — {company}" for symbol, company in INDIAN_STOCKS.items()]
+    display_choices = [f"{symbol} — {company}" for symbol, company in COMPANY_NAMES.items()]
     selected_choice = st.selectbox("Select an Indian stock", display_choices)
     selected_symbol = selected_choice.split(" — ", maxsplit=1)[0]
     selected_exchange = st.selectbox("Exchange", ["NSE", "BSE"], index=0)
@@ -406,4 +520,3 @@ st.caption(
     "This application is developed for academic and educational purposes only "
     "and does not constitute investment advice."
 )
-
