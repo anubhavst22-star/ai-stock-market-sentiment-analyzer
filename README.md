@@ -1,40 +1,39 @@
-# AI Stock Market Sentiment Analyzer
+# AlphaPulse // AI Market Terminal
 
-A beginner-friendly Streamlit project for exploring Indian company news, headline sentiment, and historical prices. It includes a searchable NSE equity directory and an optional company research panel. Existing sentiment, stock return, chart, correlation, and summary features remain available.
+AlphaPulse is a Streamlit research dashboard for Indian listed equities. It brings price action, financial-news sentiment, headline themes, and an optional AI research assistant into one terminal-style interface.
 
-## Run locally on Windows
+## Dashboard sections
 
-Install Python 3.12, open PowerShell in this folder, and run:
+- **Market Overview:** price, latest daily change, sentiment-derived status, and an interactive OHLC candlestick chart overlaid with dated news sentiment.
+- **Sentiment Engine:** positive/neutral/negative headline shares, top headline terms colored by average article polarity, and original article links.
+- **Whale & Insider Flow:** clearly marked design placeholder. Its gauge is mock-only; the project does not yet load verified insider, institutional, or options-flow data.
+- **AI Deep-Dive:** a headline-based executive summary, risks, catalyst timeline, company profile/filing links, optional AI synthesis, and contextual chat.
 
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m streamlit run app.py
-```
+## Run on Windows
 
-Keep PowerShell open while using the app. Streamlit prints a local address, usually `http://localhost:8501`.
+Use Python 3.12, open PowerShell in this folder, and run:
 
-## Data sources and coverage
+    py -3.12 -m venv .venv
+    ./.venv/Scripts/python.exe -m pip install -r requirements.txt
+    ./.venv/Scripts/python.exe -m streamlit run app.py
 
-- **Company directory:** the official NSE daily CM MII security master, which lists NSE-listed and BSE-exclusive securities. It is cached for six hours, and the app shows the retrieval timestamp. Search supports company name, ticker, and ISIN. If the daily file is temporarily unavailable, the app falls back to NSE's official equity CSV and labels the reduced coverage.
-- **Coverage and filters:** the combined daily master is filtered to Indian-company equity ISINs and recognized equity series, then de-duplicated by ISIN. The exchange offers BSE-exclusive securities through its daily file; the app cannot identify every cross-listing from this combined file. NSE does not publish sector in this master, so sector remains unavailable. BSE-exclusive equities may not have price history in Yahoo Finance.
-- **Company profile and financial history:** Yahoo Finance through `yfinance` (a secondary aggregator). Company overview, ratios, and annual revenue/net income are shown only when supplied. Values can be missing or differ from audited exchange filings. The app links to NSE filing pages for verification.
-- **Annual reports and announcements:** direct exchange filing pages are provided as starting points. The application does not yet download and summarize annual report PDFs, extract page references, or ingest the complete exchange announcement feed. Do not treat the research panel as a substitute for primary filings.
-- **News:** Google News RSS search results, with publisher and original article links when supplied. The feed is an aggregator and can be incomplete. Sample rows are identified in the news table when the feed has no result or fails.
-- **Prices:** Yahoo Finance through `yfinance`. The selected data source/exchange is shown in the price section.
-- **Sentiment:** FinBERT is attempted first; VADER is the fallback. Sentiment describes headline text, not the truth or materiality of an event.
-- **AI summary:** an OpenAI API key is optional. When configured, store it in `.streamlit/secrets.toml` for local use or Streamlit Community Cloud secrets. Never commit keys. The rest of the app works without one.
+The app prints a local URL, normally http://localhost:8501. Keep PowerShell open while you use it.
 
-## Test the exchange-list module
+## Data and keys
 
-Tests use a small synthetic CSV fixture and do not call an external service:
+- Company choices come from NSE's daily CM MII security master for NSE-listed and BSE-exclusive securities. The app tries recent trading dates, caches the list for six hours, and falls back to NSE's official equity CSV if the combined file is unavailable. The fallback is NSE-only and is labeled in the directory.
+- Historical OHLC data comes from Yahoo Finance through yfinance. The date range is user-selected. Some BSE-exclusive stocks may not have Yahoo price history.
+- Headlines come from Google News RSS and are limited to the last 30 days where publication dates exist. Publisher attribution and original links are shown when present. Sample fallback headlines are labeled.
+- FinBERT is attempted first; VADER is used if FinBERT cannot load. Scores are headline-text estimates, not verification of an event.
+- Company profile and annual figures come from Yahoo Finance as secondary data. Missing values remain unavailable; verify material financial information against exchange/company filings.
+- The AI assistant uses the OpenAI Responses API only after you enter a key or configure OPENAI_API_KEY in Streamlit secrets. A typed key is used in the current session and is not written to disk by the app. AI requests send the selected news headlines and summarized technical data to the API. Without a key, headline-based summary sections remain available, but AI generation and contextual chat are disabled.
 
-```powershell
-py -3.12 -m unittest discover -s tests -v
-```
+For Streamlit Community Cloud, add OPENAI_API_KEY and optionally OPENAI_MODEL under the app's Settings → Secrets. Never commit API keys to GitHub.
 
-## Deploy on Streamlit Community Cloud
+## Tests
 
-The repository can be selected at [Streamlit Community Cloud](https://share.streamlit.io). Choose the repository, `main` branch, and `app.py`. A new commit to the deployed branch triggers a rebuild. A local code change does not update the public app until it has been pushed and the cloud build has succeeded.
+Offline unit tests cover keyword calculations, daily sentiment grouping, sentiment labels, and exchange-list parsing:
 
-> This application is developed for academic and educational purposes only and does not constitute investment advice. Correlation does not imply causation.
+    py -3.12 -m unittest discover -s tests -v
+
+This application is for academic and educational purposes only and does not constitute investment advice. A sentiment-derived Buy/Sell/Hold label is not a trade recommendation. Correlation does not imply causation.
