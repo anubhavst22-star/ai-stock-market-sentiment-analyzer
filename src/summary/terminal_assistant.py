@@ -75,6 +75,19 @@ def build_analysis_context(analysis: Mapping[str, Any]) -> str:
             )
         if not recent_returns.empty:
             price_context += f" 20-session annualized volatility: {float(recent_returns.std() * (252 ** 0.5)):.2%}."
+        for window in (20, 50):
+            if len(closes) >= window:
+                price_context += f" SMA{window}: INR {float(closes.tail(window).mean()):.2f}."
+        if len(closes) >= 15:
+            moves = closes.diff()
+            average_gain = float(moves.clip(lower=0).tail(14).mean())
+            average_loss = float(-moves.clip(upper=0).tail(14).mean())
+            if average_loss == 0:
+                rsi = 100.0 if average_gain > 0 else 50.0
+            else:
+                relative_strength = average_gain / average_loss
+                rsi = 100 - (100 / (1 + relative_strength))
+            price_context += f" 14-session RSI: {rsi:.1f}."
 
     headlines = []
     for article in analysis.get("articles", []):
