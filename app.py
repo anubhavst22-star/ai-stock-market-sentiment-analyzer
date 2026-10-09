@@ -79,6 +79,11 @@ def load_analysis(
     }
 
 
+@st.cache_data(ttl=12 * 60 * 60, show_spinner=False)
+def load_company_profile(symbol: str, exchange: str) -> dict[str, Any]:
+    return fetch_company_research(symbol, exchange)
+
+
 def _secret(name: str, default: str = "") -> str:
     try:
         return str(st.secrets.get(name, default))
@@ -272,16 +277,26 @@ def _show_deep_dive(data: dict[str, Any], api_key: str, model: str) -> None:
         st.markdown(st.session_state["deep_dive_text"])
 
     with st.expander("Company profile and exchange filings"):
-        try:
-            profile = fetch_company_research(data["symbol"], data["exchange"])
+        if st.button("Load company profile", key=f"profile_{data['symbol']}"):
+            try:
+                with st.spinner("Loading secondary-provider company profile…"):
+                    st.session_state["terminal_company_profile"] = load_company_profile(
+                        data["symbol"], data["exchange"]
+                    )
+                    st.session_state["terminal_company_profile_symbol"] = data["symbol"]
+                    st.session_state.pop("terminal_company_profile_error", None)
+            except Exception as error:
+                st.session_state["terminal_company_profile_error"] = str(error)
+        profile = st.session_state.get("terminal_company_profile")
+        if profile and st.session_state.get("terminal_company_profile_symbol") == data["symbol"]:
             if profile.get("business_summary"):
                 st.write(profile["business_summary"])
             else:
                 st.info("Business overview is unavailable from the profile provider.")
             st.caption(f"Provider: {profile['provider']} · Retrieved {profile['retrieved_at']} · [Company profile]({profile['source_url']})")
             st.warning(profile["limitations"])
-        except Exception as error:
-            st.info(f"Company profile unavailable for this ticker/provider: {error}")
+        elif st.session_state.get("terminal_company_profile_error"):
+            st.info(f"Company profile unavailable for this ticker/provider: {st.session_state['terminal_company_profile_error']}")
         st.markdown("[NSE corporate announcements](https://www.nseindia.com/companies-listing/corporate-filings) · [NSE financial results](https://www.nseindia.com/companies-listing/corporate-filings-financial-results)")
 
     st.divider()
